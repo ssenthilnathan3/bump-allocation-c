@@ -12,8 +12,9 @@ typedef struct {
 typedef struct {
   uint8_t *cursor;
   uint8_t *limit;
-  Block *block;
-} BumpBlock;
+  Block block;
+  struct FreeNode *free_list;
+} Arena;
 
 typedef struct FreeNode {
   size_t size;

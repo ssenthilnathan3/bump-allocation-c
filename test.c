@@ -4,9 +4,11 @@
 #include <stdint.h>
 #include <stdio.h>
 
+static Arena arena = {0};
+
 static void reset(void)
 {
-    reset_arena();
+    arena_reset(&arena);
 }
 
 
@@ -16,7 +18,7 @@ static void test_basic_allocation(void)
 
     reset();
 
-    void *a = bump_alloc(32, 8);
+    void *a = arena_alloc(&arena, 32, 8);
 
     assert(a != NULL);
     assert(((uintptr_t)a % 8) == 0);
@@ -32,9 +34,9 @@ static void test_multiple_allocations(void)
 
     reset();
 
-    void *a = bump_alloc(32, 8);
-    void *b = bump_alloc(64, 8);
-    void *c = bump_alloc(16, 16);
+    void *a = arena_alloc(&arena, 32, 8);
+    void *b = arena_alloc(&arena, 64, 8);
+    void *c = arena_alloc(&arena, 16, 16);
 
     assert(a);
     assert(b);
@@ -60,11 +62,11 @@ static void test_reuse(void)
 
     reset();
 
-    void *a = bump_alloc(64, 8);
+    void *a = arena_alloc(&arena, 64, 8);
 
-    bump_free(a);
+    arena_free(&arena, a);
 
-    void *b = bump_alloc(32, 8);
+    void *b = arena_alloc(&arena, 32, 8);
 
     assert(b == a);
 
@@ -81,19 +83,19 @@ static void test_lifo(void)
 
     reset();
 
-    void *a = bump_alloc(32, 8);
-    bump_alloc(8, 8);
-    void *b = bump_alloc(32, 8);
-    bump_alloc(8, 8);
-    void *c = bump_alloc(32, 8);
+    void *a = arena_alloc(&arena, 32, 8);
+    arena_alloc(&arena, 8, 8);
+    void *b = arena_alloc(&arena, 32, 8);
+    arena_alloc(&arena, 8, 8);
+    void *c = arena_alloc(&arena, 32, 8);
 
-    bump_free(c);
-    bump_free(b);
-    bump_free(a);
+    arena_free(&arena, c);
+    arena_free(&arena, b);
+    arena_free(&arena, a);
 
-    void *d = bump_alloc(16, 8);
-    void *e = bump_alloc(16, 8);
-    void *f = bump_alloc(16, 8);
+    void *d = arena_alloc(&arena, 16, 8);
+    void *e = arena_alloc(&arena, 16, 8);
+    void *f = arena_alloc(&arena, 16, 8);
 
     assert(d == a);
     assert(e == b);
@@ -109,7 +111,7 @@ static void test_back_pointer(void)
 
     reset();
 
-    void *p = bump_alloc(48, 32);
+    void *p = arena_alloc(&arena, 48, 32);
 
     FreeNode *header =
         *(FreeNode **)((uint8_t *)p - sizeof(void *));
@@ -140,10 +142,10 @@ static void test_alignment(void)
 
     reset();
 
-    void *a = bump_alloc(8, 8);
-    void *b = bump_alloc(8, 16);
-    void *c = bump_alloc(8, 32);
-    void *d = bump_alloc(8, 64);
+    void *a = arena_alloc(&arena, 8, 8);
+    void *b = arena_alloc(&arena, 8, 16);
+    void *c = arena_alloc(&arena, 8, 32);
+    void *d = arena_alloc(&arena, 8, 64);
 
     assert(((uintptr_t)a % 8) == 0);
     assert(((uintptr_t)b % 16) == 0);
@@ -160,16 +162,16 @@ static void test_split(void)
 
     reset();
 
-    void *big = bump_alloc(128, 8);
+    void *big = arena_alloc(&arena, 128, 8);
     assert(big);
 
-    bump_free(big);
+    arena_free(&arena, big);
 
-    void *small = bump_alloc(32, 8);
+    void *small = arena_alloc(&arena, 32, 8);
 
     assert(small == big);
 
-    void *rest = bump_alloc(32, 8);
+    void *rest = arena_alloc(&arena, 32, 8);
 
     assert(rest != NULL);
     assert(rest != small);
@@ -187,15 +189,15 @@ static void test_split_reuse(void)
 
     reset();
 
-    void *big = bump_alloc(128, 8);
+    void *big = arena_alloc(&arena, 128, 8);
 
-    bump_free(big);
+    arena_free(&arena, big);
 
-    void *second = bump_alloc(32, 8);
+    void *second = arena_alloc(&arena, 32, 8);
 
-    bump_free(second);
+    arena_free(&arena, second);
 
-    void *third = bump_alloc(16, 8);
+    void *third = arena_alloc(&arena, 16, 8);
 
     assert(third == second);
 
@@ -210,10 +212,10 @@ static void test_exhaust(void)
 
     size_t count = 0;
 
-    while (bump_alloc(64, 8))
+    while (arena_alloc(&arena, 64, 8))
         count++;
 
-    assert(bump_alloc(64, 8) == NULL);
+    assert(arena_alloc(&arena, 64, 8) == NULL);
 
     printf("Allocated %zu blocks.\n", count);
 
@@ -226,11 +228,11 @@ static void test_allocate_after_free(void)
 
     reset();
 
-    void *a = bump_alloc(64, 8);
+    void *a = arena_alloc(&arena, 64, 8);
 
-    bump_free(a);
+    arena_free(&arena, a);
 
-    void *b = bump_alloc(16, 8);
+    void *b = arena_alloc(&arena, 16, 8);
 
     assert(b == a);
 
@@ -247,14 +249,14 @@ static void test_stress(void)
     void *ptrs[128];
 
     for (int i = 0; i < 128; i++)
-        ptrs[i] = bump_alloc(16, 8);
+        ptrs[i] = arena_alloc(&arena, 16, 8);
 
     for (int i = 0; i < 128; i += 2)
         if (ptrs[i])
-            bump_free(ptrs[i]);
+            arena_free(&arena, ptrs[i]);
 
     for (int i = 0; i < 64; i++)
-        assert(bump_alloc(16, 8) != NULL);
+        assert(arena_alloc(&arena, 16, 8) != NULL);
 
     printf("PASS\n\n");
 }

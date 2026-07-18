@@ -6,37 +6,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-BumpBlock arena = { .cursor = NULL, .limit = NULL, .block = NULL };
-Block global_block = { .ptr = NULL, .size = 0 };
-static FreeNode* free_list = NULL;
+int arena_init(Arena *a) {
+  uint8_t *ptr_val = malloc(BLOCK_SIZE);
+  if (!ptr_val) return 0;
 
-int create_arena(void) {
-  uint8_t* ptr_val = malloc(BLOCK_SIZE);
-
-  global_block.ptr = ptr_val;
-  global_block.size = BLOCK_SIZE;
-
-  arena.block = &global_block;
-
-  arena.cursor = arena.block->ptr;
-  arena.limit = arena.block->ptr + BLOCK_SIZE;
-
+  a->block.ptr = ptr_val;
+  a->block.size = BLOCK_SIZE;
+  a->cursor = ptr_val;
+  a->limit = ptr_val + BLOCK_SIZE;
+  a->free_list = NULL;
   return 1;
 }
 
-void reset_arena(void) {
-  if (global_block.ptr != NULL) {
-      free(global_block.ptr);
+void arena_reset(Arena *a) {
+  if (a->block.ptr != NULL) {
+    free(a->block.ptr);
   }
-
-  global_block.ptr = NULL;
-  global_block.size = 0;
-
-  arena.cursor = NULL;
-  arena.limit = NULL;
-  arena.block = NULL;
-
-  free_list = NULL;
+  a->block.ptr = NULL;
+  a->block.size = 0;
+  a->cursor = NULL;
+  a->limit = NULL;
+  a->free_list = NULL;
 }
 
 int is_free(FreeNode *h) {
@@ -47,19 +37,13 @@ size_t block_size(FreeNode *h) {
   return h->size & SIZE_MASK;
 }
 
-FreeFooter* footer_of(FreeNode *h) {
+FreeFooter *footer_of(FreeNode *h) {
   return (FreeFooter *)((uint8_t *)h + sizeof(FreeNode) + block_size(h) - sizeof(FreeFooter));
 }
 
-int check_valid_arena_exists(void) {
-  if (arena.cursor == NULL || arena.limit == NULL || arena.block == NULL) {
-    return create_arena();
-  }
-
-  if (arena.cursor == arena.limit) {
-    return -1;
-  }
-  return 1;
+void write_footer(FreeNode *header) {
+  FreeFooter *f = footer_of(header);
+  f->size = block_size(header);
 }
 
 FreeNode *check_if_fits(FreeNode *block, size_t alignment, size_t size) {
@@ -73,9 +57,9 @@ FreeNode *check_if_fits(FreeNode *block, size_t alignment, size_t size) {
   return NULL;
 }
 
-FreeNode* search_free(FreeNode** free_list, size_t size_val, size_t alignment) {
+FreeNode *search_free(FreeNode **free_list, size_t size_val, size_t alignment) {
   FreeNode *head = *free_list;
-  FreeNode* prev = NULL;
+  FreeNode *prev = NULL;
 
   while (head != NULL) {
     if (check_if_fits(head, alignment, size_val) != NULL) {
@@ -84,11 +68,9 @@ FreeNode* search_free(FreeNode** free_list, size_t size_val, size_t alignment) {
       } else {
         prev->next = head->next;
       }
-
       head->next = NULL;
       return head;
     }
-
     prev = head;
     head = head->next;
   }
@@ -96,18 +78,40 @@ FreeNode* search_free(FreeNode** free_list, size_t size_val, size_t alignment) {
   return NULL;
 }
 
-void *bump_alloc(size_t size, size_t alignment) {
-  if (check_valid_arena_exists() == -1) {
-    printf("Error creating arena\n");
-    return NULL;
+void push_free(FreeNode **free_list, FreeNode *node) {
+  node->next = *free_list;
+  *free_list = node;
+}
+
+static void unlink_from_free_list(FreeNode **free_list, FreeNode *node) {
+  FreeNode *head = *free_list;
+  FreeNode *prev = NULL;
+
+  while (head != NULL) {
+    if (head == node) {
+      if (prev == NULL) {
+        *free_list = head->next;
+      } else {
+        prev->next = head->next;
+      }
+      head->next = NULL;
+      return;
+    }
+    prev = head;
+    head = head->next;
+  }
+}
+
+void *arena_alloc(Arena *a, size_t size, size_t alignment) {
+  if (!a->cursor || !a->limit || !a->block.ptr) {
+    if (!arena_init(a)) return NULL;
   }
 
-  if (size == 0) {
-    printf("Not a valid size to allocate\n");
-    return NULL;
-  }
+  if (a->cursor == a->limit) return NULL;
 
-  FreeNode *header = search_free(&free_list, size, alignment);
+  if (size == 0) return NULL;
+
+  FreeNode *header = search_free(&a->free_list, size, alignment);
 
   if (header != NULL) {
     header->size &= SIZE_MASK;
@@ -134,7 +138,7 @@ void *bump_alloc(size_t size, size_t alignment) {
       remainder->size |= FREE_FLAG;
       remainder->padding = 0;
       write_footer(remainder);
-      push_free(remainder);
+      push_free(&a->free_list, remainder);
 
       header->size = needed + fixup;
     }
@@ -149,7 +153,7 @@ void *bump_alloc(size_t size, size_t alignment) {
     return user_ptr;
   }
 
-  header = (FreeNode *)arena.cursor;
+  header = (FreeNode *)a->cursor;
 
   uint8_t *candidate = (uint8_t *)header + sizeof(FreeNode) + sizeof(void *);
 
@@ -164,11 +168,11 @@ void *bump_alloc(size_t size, size_t alignment) {
   size_t fixup = misalign ? (align - misalign) : 0;
   end += fixup;
 
-  if (end > arena.limit) {
+  if (end > a->limit) {
     return NULL;
   }
 
-  arena.cursor = end;
+  a->cursor = end;
 
   header->size = sizeof(void *) + padding + size + sizeof(FreeFooter) + fixup;
   header->padding = padding;
@@ -180,58 +184,28 @@ void *bump_alloc(size_t size, size_t alignment) {
   return user_ptr;
 }
 
-void unlink_from_free_list(FreeNode *node) {
-    FreeNode *head = free_list;
-    FreeNode *prev = NULL;
+void arena_free(Arena *a, void *ptr) {
+  if (ptr == NULL) return;
 
-    while (head != NULL) {
-        if (head == node) {
-            if (prev == NULL) {
-                free_list = head->next;
-            } else {
-                prev->next = head->next;
-            }
-            head->next = NULL;
-            return;
-        }
-        prev = head;
-        head = head->next;
+  FreeNode *header = *(FreeNode **)((uint8_t *)ptr - sizeof(void *));
+
+  FreeNode *right = (FreeNode *)((uint8_t *)header + sizeof(FreeNode) + block_size(header));
+  if ((uint8_t *)right < a->cursor && right < (FreeNode *)a->limit && is_free(right)) {
+    unlink_from_free_list(&a->free_list, right);
+    header->size = block_size(header) + sizeof(FreeNode) + block_size(right);
+  }
+
+  if ((uint8_t *)header > a->block.ptr) {
+    FreeFooter *left_footer = (FreeFooter *)((uint8_t *)header - sizeof(FreeFooter));
+    FreeNode *left = (FreeNode *)((uint8_t *)header - sizeof(FreeNode) - left_footer->size);
+    if ((uint8_t *)left >= a->block.ptr && (uint8_t *)left < (uint8_t *)header && is_free(left)) {
+      unlink_from_free_list(&a->free_list, left);
+      left->size = block_size(left) + sizeof(FreeNode) + block_size(header);
+      header = left;
     }
-}
-
-void write_footer(FreeNode *header) {
-    FreeFooter *f = footer_of(header);
-    f->size = block_size(header);
-}
-
-void bump_free(void *ptr) {
-  if (ptr == NULL)
-    return;
-
-  FreeNode *header =
-    *(FreeNode **)((uint8_t *)ptr - sizeof(void *));
-    FreeNode *right = (FreeNode *)((uint8_t *)header + sizeof(FreeNode) + block_size(header));
-    if ((uint8_t *)right < arena.cursor && right < (FreeNode *)arena.limit && is_free(right)) {
-        unlink_from_free_list(right);
-        header->size = block_size(header) + sizeof(FreeNode) + block_size(right);
-    }
-
-    if ((uint8_t *)header > arena.block->ptr) {
-        FreeFooter *left_footer = (FreeFooter *)((uint8_t *)header - sizeof(FreeFooter));
-        FreeNode *left = (FreeNode *)((uint8_t *)header - sizeof(FreeNode) - left_footer->size);
-        if ((uint8_t *)left >= arena.block->ptr && (uint8_t *)left < (uint8_t *)header && is_free(left)) {
-            unlink_from_free_list(left);
-            left->size = block_size(left) + sizeof(FreeNode) + block_size(header);
-            header = left;
-        }
-    }
+  }
 
   header->size |= FREE_FLAG;
   write_footer(header);
-  push_free(header);
-}
-
-void push_free(FreeNode *node) {
-  node->next = free_list;
-  free_list = node;
+  push_free(&a->free_list, header);
 }

@@ -10,19 +10,18 @@
 #define FREE_FLAG 0x01
 #define SIZE_MASK (~(size_t)FREE_FLAG)
 
-int create_arena(void);
-void reset_arena(void);
-int check_valid_arena_exists(void);
+int arena_init(Arena *a);
+void arena_reset(Arena *a);
 
-void* bump_alloc(size_t size, size_t alignment);
-void bump_free(void* ptr);
+void *arena_alloc(Arena *a, size_t size, size_t alignment);
+void arena_free(Arena *a, void *ptr);
 
 FreeNode *check_if_fits(FreeNode *block, size_t alignment, size_t size);
-FreeNode* search_free(FreeNode** free_list, size_t size_val, size_t alignment);
+FreeNode *search_free(FreeNode **free_list, size_t size_val, size_t alignment);
 
-int is_free(FreeNode* h);
-size_t block_size(FreeNode* h);
-FreeFooter* footer_of(FreeNode *h);
+int is_free(FreeNode *h);
+size_t block_size(FreeNode *h);
+FreeFooter *footer_of(FreeNode *h);
 
-void push_free(FreeNode* node);
+void push_free(FreeNode **free_list, FreeNode *node);
 void write_footer(FreeNode *header);
