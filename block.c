@@ -1,5 +1,4 @@
 #include "include/block.h"
-#include "include/header.h"
 #include "include/block_types.h"
 #include <inttypes.h>
 #include <stddef.h>
@@ -68,7 +67,7 @@ FreeNode *check_if_fits(FreeNode *block, size_t alignment, size_t size) {
 
   size_t padding = (alignment - ((uintptr_t)candidate & (alignment - 1))) & (alignment - 1);
 
-  if (sizeof(void *) + padding + size + sizeof(FreeFooter) <= block->size)
+  if (sizeof(void *) + padding + size + sizeof(FreeFooter) <= block_size(block))
     return block;
 
   return NULL;
@@ -111,22 +110,36 @@ void *bump_alloc(size_t size, size_t alignment) {
   FreeNode *header = search_free(&free_list, size, alignment);
 
   if (header != NULL) {
+    header->size &= SIZE_MASK;
+
     uint8_t *candidate = (uint8_t *)header + sizeof(FreeNode) + sizeof(void *);
     size_t padding = (alignment - ((uintptr_t)candidate & (alignment - 1))) & (alignment - 1);
 
     size_t needed = sizeof(void *) + padding + size + sizeof(FreeFooter);
-    size_t leftover = header->size - needed;
 
-    if (leftover >= sizeof(FreeNode) + MIN_SPLIT_SIZE) {
-      FreeNode *remainder = (FreeNode *)((uint8_t*) header + sizeof(FreeNode) + needed);
-      remainder->size = header->size - needed - sizeof(FreeNode);
+    uint8_t *remainder_raw = (uint8_t *)header + sizeof(FreeNode) + needed;
+    uintptr_t align = _Alignof(FreeNode);
+    uintptr_t misalign = (uintptr_t)remainder_raw & (align - 1);
+    size_t fixup = misalign ? (align - misalign) : 0;
+    uint8_t *remainder_start = remainder_raw + fixup;
+
+    size_t used_so_far = sizeof(FreeNode) + needed + fixup;
+
+    if (header->size >= used_so_far &&
+        header->size - used_so_far >= sizeof(FreeNode) + MIN_SPLIT_SIZE) {
+      size_t remainder_size = header->size - used_so_far;
+
+      FreeNode *remainder = (FreeNode *)remainder_start;
+      remainder->size = remainder_size;
       remainder->size |= FREE_FLAG;
       remainder->padding = 0;
       write_footer(remainder);
       push_free(remainder);
 
-      header->size = needed;
+      header->size = needed + fixup;
     }
+
+    write_footer(header);
 
     uint8_t *user_ptr = candidate + padding;
     header->padding = padding;
@@ -146,15 +159,22 @@ void *bump_alloc(size_t size, size_t alignment) {
 
   uint8_t *end = user_ptr + size + sizeof(FreeFooter);
 
+  uintptr_t align = _Alignof(FreeNode);
+  uintptr_t misalign = (uintptr_t)end & (align - 1);
+  size_t fixup = misalign ? (align - misalign) : 0;
+  end += fixup;
+
   if (end > arena.limit) {
     return NULL;
   }
 
   arena.cursor = end;
 
-  header->size = sizeof(void *) + padding + size + sizeof(FreeFooter);
+  header->size = sizeof(void *) + padding + size + sizeof(FreeFooter) + fixup;
   header->padding = padding;
   header->next = NULL;
+
+  write_footer(header);
 
   *(FreeNode **)(user_ptr - sizeof(void *)) = header;
   return user_ptr;
